@@ -1,0 +1,62 @@
+# Efferocytosis pipeline configuration.
+#
+# All length parameters are in micrometers and converted to pixels at runtime
+# using the resolved um_per_pixel. Edit values to suit your imaging setup.
+
+microscope:
+  scope: "EVOS"
+  um_per_pixel: null          # auto-extracted from OME-XML / TIFF tags
+                              # set explicitly if metadata is missing or wrong
+
+segmentation:
+  cellpose_model: "cpsam"     # 'cpsam' (default in Cellpose v4),
+                              # 'cyto3' (Cellpose v3), OR a file path to a
+                              # custom-trained model.
+  use_gpu: true               # automatic CPU fallback if CUDA unavailable
+  cell_diameter_um: 30        # null/0 = no image rescaling (recommended for
+                              # CPSAM when cells are already in the 7.5-120 px
+                              # range that CPSAM was trained on; a 30 um BMDM
+                              # at 0.43 um/px is ~70 px, well within range).
+                              # Set to a positive value to force rescaling so
+                              # that cells become 30 px (CPSAM training mean)
+                              # or the equivalent for the v3 model in use.
+  use_model_diameter: false   # auto-true when cellpose_model is a file path
+                              # set explicitly to override
+  brightfield_channel_extraction: "luminance"   # how to collapse RGB BF to
+                              # grayscale before segmentation. 'luminance'
+                              # uses ITU-R BT.601 weighted sum and is much
+                              # better than 'max_rgb' for EVOS BF, where the
+                              # red LED often saturates the R channel.
+  flow_threshold: 0.4
+  cellprob_threshold: 0.0
+  min_cell_area_um2: 100      # below this is dropped (debris, fragments)
+  exclude_border_cells: true
+  dilation:
+    enabled: true             # peri-cell dilation, off by default
+    distance_um: 1
+    method: "expand_labels"   # multi-source watershed, no overlap
+
+ac_detection:
+  channel_extraction: "max_rgb"   # max(R,G,B); works for any fluorophore color
+  background_subtraction:
+    enabled: true
+    rolling_ball_radius_um: 20    # large enough to flatten illumination,
+                                  # small enough to spare large AC bodies
+  threshold: 28                   # set from calibrate_threshold.py
+  min_object_area_um2: 1
+  size_classes_um2:
+    puncta_max: 3                 # objects below this are 'puncta'
+    small_ac_max: 50              # below this and above puncta_max are 'small_AC'
+                                  # above small_ac_max are 'large_AC'
+
+output:
+  save_qc_overlays: true
+  qc_overlay_dpi: 120
+  save_seg_file: true             # Cellpose _seg.npy for GUI inspection/editing
+  save_grayscale_brightfield: true  # also write <bf_stem>_gray.tif and name
+                                    # the seg file <bf_stem>_gray_seg.npy so
+                                    # the Cellpose GUI auto-loads masks when
+                                    # the user opens the grayscale TIFF.
+                                    # Set false to keep only the original
+                                    # RGB BF and use <bf_stem>_seg.npy.
+  per_cell_csv: true

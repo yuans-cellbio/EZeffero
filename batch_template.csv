@@ -1,0 +1,5 @@
+sample_id,well,field,condition,ac_path,brightfield_path,seg_path,output_dir
+B05f00,B05,0,WT_AC,/data/sample/CM_B05f00d0.TIF,/data/sample/CM_B05f00d4.TIF,,
+B05f01,B05,1,WT_AC,/data/sample/CM_B05f01d0.TIF,/data/sample/CM_B05f01d4.TIF,,
+B06f00,B06,0,KO_AC,/data/sample/CM_B06f00d0.TIF,/data/sample/CM_B06f00d4.TIF,/data/sample/CM_B06f00d4_seg.npy,
+B07f00,B07,0,no_AC_ctrl,/data/sample/CM_B07f00d0.TIF,/data/sample/CM_B07f00d4.TIF,,
