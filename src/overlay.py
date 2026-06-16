@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Optional
 
 import matplotlib
 
@@ -30,6 +31,11 @@ def _stretch(image: np.ndarray, lo: float = 1.0, hi: float = 99.5) -> np.ndarray
     """Percentile-clip an image to [0, 1] for display."""
     a, b = np.percentile(image, [lo, hi])
     return np.clip((image - a) / max(b - a, 1e-9), 0, 1)
+
+
+def _scale_fixed(image: np.ndarray, vmin: float, vmax: float) -> np.ndarray:
+    """Scale an image to [0, 1] using absolute display limits."""
+    return np.clip((image - vmin) / max(vmax - vmin, 1e-9), 0, 1)
 
 
 def _scatter_centroids(ax, ac_props: pd.DataFrame) -> None:
@@ -56,7 +62,8 @@ def make_qc_overlay(brightfield: np.ndarray,
                     ac_props: pd.DataFrame,
                     output_path: Path,
                     title: str,
-                    dpi: int = 120) -> None:
+                    dpi: int = 120,
+                    ac_display_limits: Optional[tuple[float, float]] = None) -> None:
     """Render the QC overlay PNG.
 
     Mask boundaries are 1-pixel dilated for readable line width at PNG
@@ -66,7 +73,10 @@ def make_qc_overlay(brightfield: np.ndarray,
     """
     h, w = brightfield.shape
     bf_n = _stretch(brightfield, 1, 99).astype(np.float32)
-    ac_n = _stretch(ac_image, 5, 99.95).astype(np.float32)
+    if ac_display_limits is None:
+        ac_n = _stretch(ac_image, 5, 99.95).astype(np.float32)
+    else:
+        ac_n = _scale_fixed(ac_image, *ac_display_limits).astype(np.float32)
 
     bf_rgb = np.stack([bf_n, bf_n, bf_n], axis=-1)
 

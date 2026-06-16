@@ -165,26 +165,33 @@ def save_seg_file(seg_out_path: Path,
                   flows: list,
                   image: np.ndarray,
                   diameter_px: Optional[float],
-                  source_image_path: Path) -> None:
+                  source_image_path: Path,
+                  save_flows: bool = True,
+                  embed_image: bool = True,
+                  save_outlines: bool = True) -> None:
     """Write a Cellpose-compatible _seg.npy file.
 
     Format mirrors what cellpose.io.masks_flows_to_seg writes, so the GUI can
     auto-detect masks when the user opens the source image. We write a manual
     dict to avoid forcing cellpose import for non-segmentation runs.
     """
-    outlines = _masks_to_outlines(masks)
     n = int(masks.max())
+    mask_dtype = np.uint16 if n < 65535 else np.uint32
 
     seg_dict = {
-        'masks': masks.astype(np.uint16 if n < 65535 else np.uint32),
-        'outlines': outlines.astype(np.uint16 if n < 65535 else np.uint32),
-        'flows': flows if flows else [],
+        'masks': masks.astype(mask_dtype),
+        # Keep the key for Cellpose GUI compatibility. When None, the GUI
+        # recomputes outlines from masks on load instead of storing duplicates.
+        'outlines': _masks_to_outlines(masks).astype(mask_dtype) if save_outlines else None,
         'chan_choose': [0, 0],
         'ismanual': np.zeros(n, dtype=bool),
         'filename': str(source_image_path),
         'diameter': float(diameter_px) if diameter_px else 0.0,
-        'img': image,
     }
+    if save_flows:
+        seg_dict['flows'] = flows if flows else []
+    if embed_image:
+        seg_dict['img'] = image
     np.save(seg_out_path, seg_dict, allow_pickle=True)
     logger.info(f"Saved seg file: {seg_out_path}")
 

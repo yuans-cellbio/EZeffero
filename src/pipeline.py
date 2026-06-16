@@ -47,6 +47,31 @@ def resolve_pixel_size_um(bf_path: Path, config: dict) -> float:
     )
 
 
+def expected_seg_file_path(bf_path: Path, output_dir: Path, config: dict) -> Path:
+    """Return the default seg file path for this BF image and output folder."""
+    save_gray_bf = config['output'].get('save_grayscale_brightfield', True)
+    suffix = '_gray_seg.npy' if save_gray_bf else '_seg.npy'
+    return output_dir / f"{bf_path.stem}{suffix}"
+
+
+def find_existing_seg_file(bf_path: Path, output_dir: Path, config: dict) -> Optional[Path]:
+    """Find an existing default segmentation for this field.
+
+    Search the active output directory first, then the BF source folder. The
+    source-folder fallback preserves reuse when a user now writes analysis
+    outputs elsewhere but already has a segmentation next to the image.
+    """
+    candidates = [expected_seg_file_path(bf_path, output_dir, config)]
+    source_candidate = expected_seg_file_path(bf_path, bf_path.parent, config)
+    if source_candidate not in candidates:
+        candidates.append(source_candidate)
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def process_field(row: pd.Series, config: dict) -> Optional[pd.DataFrame]:
     """Process a single field. Returns per-cell DataFrame or None on failure.
 
@@ -72,6 +97,11 @@ def process_field(row: pd.Series, config: dict) -> Optional[pd.DataFrame]:
     ac_image_raw = pio.load_image_grayscale(ac_path, fluorescence_extraction)
 
     seg_cfg = config['segmentation']
+    if seg_path is None:
+        seg_path = find_existing_seg_file(bf_path, output_dir, config)
+        if seg_path is not None:
+            logger.info(f"Found existing segmentation: {seg_path}")
+
     if seg_path is not None:
         if not seg_path.exists():
             raise FileNotFoundError(
@@ -107,10 +137,10 @@ def process_field(row: pd.Series, config: dict) -> Optional[pd.DataFrame]:
         if save_gray_bf:
             gray_bf_path = output_dir / f"{bf_path.stem}_gray.tif"
             pio.save_grayscale_tif(bf_image, gray_bf_path)
-            seg_file_used = output_dir / f"{bf_path.stem}_gray_seg.npy"
+            seg_file_used = expected_seg_file_path(bf_path, output_dir, config)
             seg_source_path = gray_bf_path
         else:
-            seg_file_used = output_dir / f"{bf_path.stem}_seg.npy"
+            seg_file_used = expected_seg_file_path(bf_path, output_dir, config)
             seg_source_path = bf_path
 
         if out_cfg.get('save_seg_file', True):
@@ -121,6 +151,9 @@ def process_field(row: pd.Series, config: dict) -> Optional[pd.DataFrame]:
                 image=bf_image,
                 diameter_px=diameter_px,
                 source_image_path=seg_source_path,
+                save_flows=out_cfg.get('save_seg_flows', True),
+                embed_image=out_cfg.get('embed_image_in_seg_file', True),
+                save_outlines=out_cfg.get('save_seg_outlines', True),
             )
 
     min_cell_area_px = seg_cfg.get('min_cell_area_um2', 80) / (um_per_pixel ** 2)
@@ -190,14 +223,20 @@ def process_field(row: pd.Series, config: dict) -> Optional[pd.DataFrame]:
 
     if config['output'].get('save_qc_overlays', True):
         overlay_path = output_dir / f"{sample_id}_overlay.png"
+        ac_display_limits = None
+        ac_vmin = config['output'].get('qc_ac_display_vmin')
+        ac_vmax = config['output'].get('qc_ac_display_vmax')
+        if ac_vmin is not None and ac_vmax is not None:
+            ac_display_limits = (float(ac_vmin), float(ac_vmax))
         overlay.make_qc_overlay(
             brightfield=bf_image,
-            ac_image=ac_image_raw,
+            ac_image=ac_image_corrected,
             cell_labels=cell_labels,
             ac_props=ac_props,
             output_path=overlay_path,
             title=f"{sample_id}  (n_cells={n_cells}, threshold={threshold:.0f})",
             dpi=config['output'].get('qc_overlay_dpi', 120),
+            ac_display_limits=ac_display_limits,
         )
 
     write_run_log(

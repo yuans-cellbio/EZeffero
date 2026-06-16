@@ -42,17 +42,27 @@ ac_detection:
     enabled: true
     rolling_ball_radius_um: 20    # large enough to flatten illumination,
                                   # small enough to spare large AC bodies
-  threshold: 28                   # set from calibrate_threshold.py
+  threshold: 130                   # set from calibrate_threshold.py
   min_object_area_um2: 1
   size_classes_um2:
     puncta_max: 3                 # objects below this are 'puncta'
-    small_ac_max: 50              # below this and above puncta_max are 'small_AC'
+    small_ac_max: 25              # below this and above puncta_max are 'small_AC'
                                   # above small_ac_max are 'large_AC'
 
 output:
   save_qc_overlays: true
   qc_overlay_dpi: 120
+  qc_ac_display_vmin: 0          # fixed/global AC display limits for overlays;
+  qc_ac_display_vmax: 255        # set either to null to use per-image stretch
   save_seg_file: true             # Cellpose _seg.npy for GUI inspection/editing
+  save_seg_flows: false           # flows/cellprob are useful for diagnostics,
+                                  # but make _seg.npy much larger and are not
+                                  # needed for manual mask editing in the GUI
+  save_seg_outlines: false        # outlines can be recomputed from masks by
+                                  # the GUI, so storing them duplicates data
+  embed_image_in_seg_file: false  # keep false when save_grayscale_brightfield
+                                  # is true; the GUI loads the companion TIFF
+                                  # and the _seg.npy stores masks/metadata only
   save_grayscale_brightfield: true  # also write <bf_stem>_gray.tif and name
                                     # the seg file <bf_stem>_gray_seg.npy so
                                     # the Cellpose GUI auto-loads masks when
