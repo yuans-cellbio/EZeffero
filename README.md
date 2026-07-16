@@ -60,6 +60,77 @@ python scripts/run_efferocytosis.py --config config.yaml batch \
 
 See `batch_template.csv` for the input CSV format.
 
+### AC parameter optimization
+
+`scripts/optimize_ac_detection_params.py` jointly sweeps
+`ac_detection.threshold` and
+`ac_detection.size_classes_um2.small_ac_max`. It scores each candidate by
+the percentage of BMDMs containing at least one large AC, retaining
+parameter sets below a configurable healthy-control ceiling.
+
+Run the normal batch pipeline first. The optimizer reuses the resulting
+Cellpose masks and does not rerun segmentation:
+
+```bash
+python scripts/run_efferocytosis.py --config config.yaml batch \
+    --input optimization_batch.csv
+```
+
+The optimization batch CSV uses the normal batch columns plus:
+
+| Column | Purpose |
+|---|---|
+| `perturbation` | optional second stratum selected by `--perturbation` |
+| `optimizer_condition` | explicit optimizer class; defaults are `negative` and `positive` |
+| `replicate` | biological replicate used when aggregating fields |
+
+Each row must either provide `seg_path` or have a mask at
+`<output_dir>/<brightfield_stem>_gray_seg.npy`. Use distinct output
+directories when EVOS acquisitions reuse image basenames; otherwise a mask
+from one acquisition can be incorrectly reused for another.
+
+Run independent sweeps for strata with different fluorescence
+distributions. For example:
+
+```bash
+python scripts/optimize_ac_detection_params.py \
+    --batch optimization_batch.csv \
+    --config config.yaml \
+    --output-dir outputs/ac_param_optimization/cm \
+    --perturbation all \
+    --negative-condition negative \
+    --positive-condition positive \
+    --thresholds 1:30:1 \
+    --small-ac-max 1:50:1 \
+    --max-negative-pct 10 \
+    --rank-by separation \
+    --config-out config_cm_optimized.yaml
+```
+
+Select experimental strata by supplying a batch CSV containing only the
+samples that should be compared. Columns such as `medium`, genotype, or
+treatment remain ordinary pass-through metadata and are not interpreted by
+the optimizer.
+
+The grid syntax is `start:stop:step` with an inclusive stop, or a
+comma-separated list. By default, rows with `optimizer_condition=positive`
+are compared with rows having `optimizer_condition=negative`; override the
+keywords with `--positive-condition` and `--negative-condition`.
+`--rank-by separation` maximizes positive minus negative percent among
+candidates passing `--max-negative-pct`. `--rank-by score` additionally
+penalizes negative-class positivity by `--negative-penalty`. If the selected
+value is at a grid boundary, extend the grid and rerun before accepting it.
+
+The optimizer writes:
+
+| File | Purpose |
+|---|---|
+| `candidate_scores.csv` | every parameter combination and its metrics |
+| `top_candidates.csv` | highest-ranked passing candidates |
+| `best_condition_by_mouse_summary.csv` | condition-level result for the selected parameters |
+| `best_field_counts.csv` | selected-parameter counts for every field |
+| `--config-out` path | input config copied with the selected threshold and size cutoff |
+
 ## Inputs and channels
 
 Two image channels are required per field: the AC fluorescence channel (any

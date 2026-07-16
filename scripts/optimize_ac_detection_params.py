@@ -40,25 +40,26 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Sweep ac_detection.threshold and "
-            "ac_detection.size_classes_um2.small_ac_max to keep healthy "
-            "Jurkat signal low while separating UV/staurosporine AC groups."
+            "ac_detection.size_classes_um2.small_ac_max to keep the negative "
+            "optimizer class low while separating the positive class."
         )
     )
     parser.add_argument("--batch", type=Path, default=Path("ezeffero_full_batch.csv"))
     parser.add_argument("--config", type=Path, default=Path("config.yaml"))
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/ac_param_optimization"))
-    parser.add_argument("--medium", default="mcsf")
     parser.add_argument("--perturbation", default="vehicle")
-    parser.add_argument("--baseline-condition", default="healthy")
-    parser.add_argument("--positive-conditions", default="uv,staurosporine")
+    parser.add_argument("--positive-condition", default="positive",
+                        help="Value identifying positive rows in optimizer_condition.")
+    parser.add_argument("--negative-condition", default="negative",
+                        help="Value identifying negative rows in optimizer_condition.")
     parser.add_argument("--thresholds", default="20:80:10",
                         help="Grid as start:stop:step, or comma-separated values.")
     parser.add_argument("--small-ac-max", default="20:100:10",
                         help="Grid as start:stop:step, or comma-separated values.")
-    parser.add_argument("--healthy-penalty", type=float, default=1.0,
-                        help="Extra penalty on healthy positivity in the score column.")
-    parser.add_argument("--max-healthy-pct", default="10.0",
-                        help="Hard filter for mean healthy percent. Use 'none' to disable.")
+    parser.add_argument("--negative-penalty", type=float, default=1.0,
+                        help="Extra penalty on negative-class positivity in the score column.")
+    parser.add_argument("--max-negative-pct", default="10.0",
+                        help="Hard filter for mean negative percent. Use 'none' to disable.")
     parser.add_argument("--rank-by", choices=("separation", "score"), default="separation",
                         help="Rank passing candidates by separation or penalized score.")
     parser.add_argument("--top-n", type=int, default=20)
@@ -114,13 +115,17 @@ def expected_seg_path(row: pd.Series) -> Path:
 
 def load_fields(args: argparse.Namespace, config: dict) -> list[FieldData]:
     batch = pd.read_csv(args.batch).fillna("")
-    positives = {x.strip() for x in args.positive_conditions.split(",") if x.strip()}
-    wanted_conditions = positives | {args.baseline_condition}
+    wanted_conditions = {args.positive_condition, args.negative_condition}
+
+    if "optimizer_condition" not in batch.columns:
+        raise ValueError(
+            "Batch CSV must contain optimizer_condition with explicit positive "
+            "and negative class labels."
+        )
 
     subset = batch[
-        (batch.get("medium", "") == args.medium)
-        & (batch.get("perturbation", "") == args.perturbation)
-        & (batch.get("ac_condition", "").isin(wanted_conditions))
+        (batch.get("perturbation", "") == args.perturbation)
+        & (batch["optimizer_condition"].isin(wanted_conditions))
     ].copy()
     if subset.empty:
         raise ValueError("No matching rows found in batch CSV")
@@ -164,7 +169,7 @@ def load_fields(args: argparse.Namespace, config: dict) -> list[FieldData]:
         fields.append(
             FieldData(
                 sample_id=str(row["sample_id"]),
-                condition=clean_id(row["ac_condition"]),
+                condition=clean_id(row["optimizer_condition"]),
                 replicate=clean_id(row["replicate"]),
                 field=clean_id(row["field"]),
                 cell_labels=labels,
@@ -245,23 +250,22 @@ def summarize_counts(counts: list[dict[str, object]]) -> pd.DataFrame:
 
 def score_summary(
     summary: pd.DataFrame,
-    baseline_condition: str,
-    positive_conditions: set[str],
-    healthy_penalty: float,
+    negative_condition: str,
+    positive_condition: str,
+    negative_penalty: float,
 ) -> dict[str, float]:
-    baseline = summary[summary["condition"] == baseline_condition]["pct_bmdm_with_large_ac"]
-    positive = summary[summary["condition"].isin(positive_conditions)]["pct_bmdm_with_large_ac"]
+    negative = summary[summary["condition"] == negative_condition]["pct_bmdm_with_large_ac"]
+    positive = summary[summary["condition"] == positive_condition]["pct_bmdm_with_large_ac"]
     metrics = {
-        "healthy_mean_pct": float(baseline.mean()) if len(baseline) else np.nan,
-        "healthy_max_pct": float(baseline.max()) if len(baseline) else np.nan,
+        "negative_mean_pct": float(negative.mean()) if len(negative) else np.nan,
+        "negative_max_pct": float(negative.max()) if len(negative) else np.nan,
         "positive_mean_pct": float(positive.mean()) if len(positive) else np.nan,
     }
-    for condition in sorted(positive_conditions):
-        vals = summary[summary["condition"] == condition]["pct_bmdm_with_large_ac"]
-        metrics[f"{condition}_mean_pct"] = float(vals.mean()) if len(vals) else np.nan
 
-    metrics["separation_pct"] = metrics["positive_mean_pct"] - metrics["healthy_mean_pct"]
-    metrics["score"] = metrics["separation_pct"] - healthy_penalty * metrics["healthy_mean_pct"]
+    metrics["separation_pct"] = metrics["positive_mean_pct"] - metrics["negative_mean_pct"]
+    metrics["score"] = (
+        metrics["separation_pct"] - negative_penalty * metrics["negative_mean_pct"]
+    )
     return metrics
 
 
@@ -278,12 +282,10 @@ def write_optimized_config(config: dict, output_path: Path, threshold: float, sm
 
 def main() -> None:
     args = parse_args()
-    max_healthy_pct = parse_optional_float(args.max_healthy_pct)
+    max_negative_pct = parse_optional_float(args.max_negative_pct)
     config = load_config(args.config)
     thresholds = parse_grid(args.thresholds)
     small_ac_grid = parse_grid(args.small_ac_max)
-    positive_conditions = {x.strip() for x in args.positive_conditions.split(",") if x.strip()}
-
     fields = load_fields(args, config)
     min_object_area_um2 = float(config["ac_detection"].get("min_object_area_um2", 0.3))
 
@@ -310,24 +312,24 @@ def main() -> None:
             summary = summarize_counts(counts)
             metrics = score_summary(
                 summary,
-                baseline_condition=args.baseline_condition,
-                positive_conditions=positive_conditions,
-                healthy_penalty=args.healthy_penalty,
+                negative_condition=args.negative_condition,
+                positive_condition=args.positive_condition,
+                negative_penalty=args.negative_penalty,
             )
 
             row = {
                 "threshold": threshold,
                 "small_ac_max_um2": small_ac_max,
                 **metrics,
-                "passes_max_healthy": (
-                    True if max_healthy_pct is None
-                    else metrics["healthy_mean_pct"] <= max_healthy_pct
+                "passes_max_negative": (
+                    True if max_negative_pct is None
+                    else metrics["negative_mean_pct"] <= max_negative_pct
                 ),
             }
             candidate_rows.append(row)
 
     candidates = pd.DataFrame(candidate_rows)
-    rankable = candidates[candidates["passes_max_healthy"]].copy()
+    rankable = candidates[candidates["passes_max_negative"]].copy()
     if rankable.empty:
         rankable = candidates.copy()
     primary_rank = "separation_pct" if args.rank_by == "separation" else "score"
@@ -350,7 +352,7 @@ def main() -> None:
     best_summary = summarize_counts(final_counts)
 
     candidates = candidates.sort_values(
-        ["passes_max_healthy", primary_rank, secondary_rank, "positive_mean_pct"],
+        ["passes_max_negative", primary_rank, secondary_rank, "positive_mean_pct"],
         ascending=[False, False, False, False],
     )
     candidates.to_csv(args.output_dir / "candidate_scores.csv", index=False)
@@ -374,7 +376,7 @@ def main() -> None:
         f"threshold={best['threshold']}, "
         f"small_ac_max={best['small_ac_max_um2']} um2, "
         f"score={best['score']:.2f}, "
-        f"healthy_mean={best['healthy_mean_pct']:.2f}%, "
+        f"negative_mean={best['negative_mean_pct']:.2f}%, "
         f"positive_mean={best['positive_mean_pct']:.2f}%"
     )
     if args.config_out is not None:
