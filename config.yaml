@@ -42,7 +42,11 @@ ac_detection:
     enabled: true
     rolling_ball_radius_um: 20    # large enough to flatten illumination,
                                   # small enough to spare large AC bodies
-  threshold: 130                   # set from calibrate_threshold.py
+  threshold_strategy: "single"    # "single" or "hysteresis"
+  threshold: 130                  # used only by the single strategy
+  hysteresis:
+    low_threshold: 90             # connected dim extent retained around a seed
+    high_threshold: 130           # bright seed required for every retained object
   min_object_area_um2: 1
   size_classes_um2:
     puncta_max: 3                 # objects below this are 'puncta'

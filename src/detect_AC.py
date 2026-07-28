@@ -1,7 +1,8 @@
 """Apoptotic cell (AC) detection in the AC fluorescence channel.
 
-Pipeline: background subtraction (top-hat with disk SE) -> threshold ->
-connected components -> size-based classification (puncta / small AC / large AC).
+Pipeline: background subtraction (top-hat with disk SE) -> single or
+hysteresis thresholding -> connected components -> size-based classification
+(puncta / small AC / large AC).
 """
 
 from __future__ import annotations
@@ -39,26 +40,25 @@ def subtract_background(image: np.ndarray, radius_px: int) -> np.ndarray:
     return cv2.morphologyEx(img32, cv2.MORPH_TOPHAT, kernel)
 
 
-def detect_ac_objects(image: np.ndarray,
-                      threshold: float,
-                      min_object_area_px: float
-                      ) -> Tuple[np.ndarray, pd.DataFrame]:
-    """Threshold the AC channel and label connected components.
+PROP_COLUMNS = [
+    'label', 'area', 'centroid_y', 'centroid_x',
+    'mean_intensity', 'max_intensity', 'integrated_intensity',
+]
 
-    Returns:
-        labels : int label image, 0 = background.
-        props  : DataFrame with one row per object (label, area, centroids,
-                 mean_intensity, max_intensity, integrated_intensity).
-    """
-    mask = image > threshold
+
+def _empty_props() -> pd.DataFrame:
+    return pd.DataFrame(columns=PROP_COLUMNS)
+
+
+def _measure_object_mask(image: np.ndarray,
+                         mask: np.ndarray,
+                         min_object_area_px: float
+                         ) -> Tuple[np.ndarray, pd.DataFrame]:
+    """Label, area-filter, and measure a binary AC object mask."""
     labels = measure.label(mask, connectivity=2)
 
     if labels.max() == 0:
-        empty = pd.DataFrame(columns=[
-            'label', 'area', 'centroid_y', 'centroid_x',
-            'mean_intensity', 'max_intensity', 'integrated_intensity'
-        ])
-        return labels.astype(np.int32), empty
+        return labels.astype(np.int32), _empty_props()
 
     if min_object_area_px > 1:
         sizes = np.bincount(labels.ravel())
@@ -66,22 +66,86 @@ def detect_ac_objects(image: np.ndarray,
         keep = sizes >= min_object_area_px
         labels = np.where(keep[labels], labels, 0)
         if labels.max() == 0:
-            empty = pd.DataFrame(columns=[
-                'label', 'area', 'centroid_y', 'centroid_x',
-                'mean_intensity', 'max_intensity', 'integrated_intensity'
-            ])
-            return labels.astype(np.int32), empty
+            return labels.astype(np.int32), _empty_props()
 
     props_table = measure.regionprops_table(
         labels, intensity_image=image,
         properties=('label', 'area', 'centroid', 'mean_intensity', 'max_intensity'),
     )
     props = pd.DataFrame(props_table)
-    props = props.rename(columns={'centroid-0': 'centroid_y', 'centroid-1': 'centroid_x'})
+    props = props.rename(columns={
+        'centroid-0': 'centroid_y',
+        'centroid-1': 'centroid_x',
+    })
     props['integrated_intensity'] = props['mean_intensity'] * props['area']
-
-    logger.info(f"Detected {len(props)} AC objects above threshold {threshold:.2f}")
     return labels.astype(np.int32), props
+
+
+def detect_ac_objects(image: np.ndarray,
+                      threshold: float,
+                      min_object_area_px: float
+                      ) -> Tuple[np.ndarray, pd.DataFrame]:
+    """Apply one global threshold and label connected AC objects.
+
+    Returns:
+        labels : int label image, 0 = background.
+        props  : DataFrame with one row per object (label, area, centroids,
+                 mean_intensity, max_intensity, integrated_intensity).
+    """
+    labels, props = _measure_object_mask(
+        image,
+        mask=image > threshold,
+        min_object_area_px=min_object_area_px,
+    )
+    logger.info(f"Detected {len(props)} AC objects above threshold {threshold:.2f}")
+    return labels, props
+
+
+def detect_ac_objects_hysteresis(image: np.ndarray,
+                                 low_threshold: float,
+                                 high_threshold: float,
+                                 min_object_area_px: float
+                                 ) -> Tuple[np.ndarray, pd.DataFrame]:
+    """Keep low-threshold components only when they contain a high-threshold seed.
+
+    The high threshold requires a bright core, while the low threshold restores
+    the connected dimmer extent of that object. Eight-connected components are
+    used, matching the single-threshold detector. Low-only components without a
+    high seed are discarded.
+    """
+    low_threshold = float(low_threshold)
+    high_threshold = float(high_threshold)
+    if not np.isfinite(low_threshold) or not np.isfinite(high_threshold):
+        raise ValueError("Hysteresis thresholds must be finite")
+    if low_threshold > high_threshold:
+        raise ValueError(
+            "Hysteresis low_threshold must be less than or equal to high_threshold"
+        )
+
+    low_labels = measure.label(image > low_threshold, connectivity=2)
+    if low_labels.max() == 0:
+        return low_labels.astype(np.int32), _empty_props()
+
+    seeded_labels = np.unique(low_labels[image > high_threshold])
+    seeded_labels = seeded_labels[seeded_labels > 0]
+    if len(seeded_labels) == 0:
+        return np.zeros_like(low_labels, dtype=np.int32), _empty_props()
+
+    keep_labels = np.zeros(int(low_labels.max()) + 1, dtype=bool)
+    keep_labels[seeded_labels] = True
+    hysteresis_mask = keep_labels[low_labels]
+    labels, props = _measure_object_mask(
+        image,
+        mask=hysteresis_mask,
+        min_object_area_px=min_object_area_px,
+    )
+    logger.info(
+        "Detected %d AC objects with hysteresis thresholds low=%.2f, high=%.2f",
+        len(props),
+        low_threshold,
+        high_threshold,
+    )
+    return labels, props
 
 
 def classify_ac_by_size(props: pd.DataFrame,

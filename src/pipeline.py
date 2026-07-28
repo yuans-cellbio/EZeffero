@@ -25,7 +25,45 @@ def load_config(config_path: Path) -> dict:
     for section in ('microscope', 'segmentation', 'ac_detection', 'output'):
         if section not in cfg:
             raise ValueError(f"Config missing required section: {section}")
+    resolve_ac_detection_thresholds(cfg['ac_detection'])
     return cfg
+
+
+def resolve_ac_detection_thresholds(ac_config: dict) -> dict:
+    """Validate and normalize the configured AC thresholding strategy."""
+    strategy = str(ac_config.get('threshold_strategy', 'single')).lower()
+    if strategy == 'single':
+        threshold = float(ac_config['threshold'])
+        return {
+            'strategy': strategy,
+            'threshold': threshold,
+            'low_threshold': threshold,
+            'high_threshold': threshold,
+        }
+    if strategy == 'hysteresis':
+        hysteresis = ac_config.get('hysteresis', {})
+        try:
+            low_threshold = float(hysteresis['low_threshold'])
+            high_threshold = float(hysteresis['high_threshold'])
+        except KeyError as exc:
+            raise ValueError(
+                "Hysteresis thresholding requires "
+                "ac_detection.hysteresis.low_threshold and high_threshold"
+            ) from exc
+        if low_threshold > high_threshold:
+            raise ValueError(
+                "Hysteresis low_threshold must be less than or equal to "
+                "high_threshold"
+            )
+        return {
+            'strategy': strategy,
+            'threshold': high_threshold,
+            'low_threshold': low_threshold,
+            'high_threshold': high_threshold,
+        }
+    raise ValueError(
+        "ac_detection.threshold_strategy must be 'single' or 'hysteresis'"
+    )
 
 
 def resolve_pixel_size_um(bf_path: Path, config: dict) -> float:
@@ -182,11 +220,25 @@ def process_field(row: pd.Series, config: dict) -> Optional[pd.DataFrame]:
     else:
         ac_image_corrected = ac_image_raw
 
-    threshold = float(ac_cfg['threshold'])
+    threshold_params = resolve_ac_detection_thresholds(ac_cfg)
+    threshold = threshold_params['threshold']
+    low_threshold = threshold_params['low_threshold']
+    high_threshold = threshold_params['high_threshold']
+    threshold_strategy = threshold_params['strategy']
     min_object_area_px = ac_cfg.get('min_object_area_um2', 0.3) / (um_per_pixel ** 2)
-    ac_labels, ac_props = detect_AC.detect_ac_objects(
-        ac_image_corrected, threshold=threshold, min_object_area_px=min_object_area_px,
-    )
+    if threshold_strategy == 'hysteresis':
+        ac_labels, ac_props = detect_AC.detect_ac_objects_hysteresis(
+            ac_image_corrected,
+            low_threshold=low_threshold,
+            high_threshold=high_threshold,
+            min_object_area_px=min_object_area_px,
+        )
+    else:
+        ac_labels, ac_props = detect_AC.detect_ac_objects(
+            ac_image_corrected,
+            threshold=threshold,
+            min_object_area_px=min_object_area_px,
+        )
     ac_props = detect_AC.classify_ac_by_size(
         ac_props,
         um_per_pixel=um_per_pixel,
@@ -206,7 +258,10 @@ def process_field(row: pd.Series, config: dict) -> Optional[pd.DataFrame]:
     for k, v in metadata.items():
         per_cell[k] = v
     per_cell['sample_id'] = sample_id
+    per_cell['threshold_strategy'] = threshold_strategy
     per_cell['threshold_used'] = threshold
+    per_cell['threshold_low_used'] = low_threshold
+    per_cell['threshold_high_used'] = high_threshold
     per_cell['um_per_pixel'] = um_per_pixel
     per_cell['cellpose_model'] = seg_cfg['cellpose_model']
     per_cell['seg_file_sha256'] = (pio.compute_file_sha256(seg_file_used)
@@ -234,7 +289,11 @@ def process_field(row: pd.Series, config: dict) -> Optional[pd.DataFrame]:
             cell_labels=cell_labels,
             ac_props=ac_props,
             output_path=overlay_path,
-            title=f"{sample_id}  (n_cells={n_cells}, threshold={threshold:.0f})",
+            title=(
+                f"{sample_id}  (n_cells={n_cells}, "
+                f"thresholds={low_threshold:.0f}/{high_threshold:.0f}, "
+                f"strategy={threshold_strategy})"
+            ),
             dpi=config['output'].get('qc_overlay_dpi', 120),
             ac_display_limits=ac_display_limits,
         )
@@ -247,6 +306,9 @@ def process_field(row: pd.Series, config: dict) -> Optional[pd.DataFrame]:
         ac_path=ac_path,
         seg_file_used=seg_file_used,
         threshold=threshold,
+        threshold_strategy=threshold_strategy,
+        low_threshold=low_threshold,
+        high_threshold=high_threshold,
         um_per_pixel=um_per_pixel,
         n_cells=n_cells,
         n_ac_objects=len(ac_props),
@@ -262,6 +324,9 @@ def write_run_log(log_path: Path,
                   ac_path: Path,
                   seg_file_used: Path,
                   threshold: float,
+                  threshold_strategy: str,
+                  low_threshold: float,
+                  high_threshold: float,
                   um_per_pixel: float,
                   n_cells: int,
                   n_ac_objects: int) -> None:
@@ -284,7 +349,10 @@ def write_run_log(log_path: Path,
         'inputs': inputs,
         'resolved_parameters': {
             'um_per_pixel': um_per_pixel,
+            'threshold_strategy': threshold_strategy,
             'threshold': threshold,
+            'low_threshold': low_threshold,
+            'high_threshold': high_threshold,
             'n_cells_after_filter': n_cells,
             'n_ac_objects': n_ac_objects,
         },

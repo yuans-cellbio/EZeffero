@@ -31,8 +31,9 @@ GPU is auto-used if CUDA is available; otherwise the pipeline runs on CPU
 
 1. Copy `config.yaml` next to your data and edit `microscope.um_per_pixel`
    only if your images are not standard EVOS OME-TIFFs.
-2. Run the threshold calibration helper on your no-AC control images and
-   write the chosen threshold into `ac_detection.threshold`:
+2. For `threshold_strategy: single`, run the threshold calibration helper on
+   your no-AC control images and write the chosen threshold into
+   `ac_detection.threshold`:
    ```bash
    python scripts/calibrate_threshold.py \
        --neg-control /data/plate1/no_AC_well/*.TIF \
@@ -59,6 +60,49 @@ python scripts/run_efferocytosis.py --config config.yaml batch \
 ```
 
 See `batch_template.csv` for the input CSV format.
+
+### Hysteresis thresholding
+
+Set `ac_detection.threshold_strategy: hysteresis` to require every retained
+AC object to contain a bright high-threshold seed while restoring its
+connected dimmer extent at a lower threshold:
+
+```yaml
+ac_detection:
+  threshold_strategy: hysteresis
+  hysteresis:
+    low_threshold: 150
+    high_threshold: 250
+```
+
+Pixels above `low_threshold` form eight-connected candidate components. A
+component is retained only if at least one pixel is above `high_threshold`.
+This suppresses isolated dim membrane/debris while avoiding the area shrinkage
+caused by using the high threshold alone. Setting low and high to the same
+value is equivalent to single-threshold detection.
+
+`scripts/optimize_hysteresis_ac_detection.py` sweeps low/high thresholds and
+the large-AC area boundary while reusing saved Cellpose masks. It can screen
+candidates by Healthy-control positivity and by median, 90th-percentile, and
+giant-object area criteria:
+
+```bash
+python scripts/optimize_hysteresis_ac_detection.py \
+    --batch optimization_batch.csv \
+    --config config.yaml \
+    --output-dir outputs/hysteresis_optimization \
+    --perturbation green_ac_plate \
+    --low-thresholds 125:225:25 \
+    --high-thresholds 200:350:25 \
+    --small-ac-max 50:80:10 \
+    --max-negative-large-pct 2.5 \
+    --max-negative-any-pct 3.5 \
+    --config-out config_hysteresis_optimized.yaml
+```
+
+Inspect `top_candidates.csv` and representative QC overlays before accepting
+the automatically ranked candidate. Very low growth thresholds can bridge
+nearby fluorescence into unrealistically large connected objects.
 
 ### AC parameter optimization
 
@@ -187,7 +231,10 @@ segmentation; see "Brightfield channel collapse" below.
 | ac_integrated_intensity | sum of AC channel within cell mask |
 | ac_mean_intensity | per-pixel AC intensity within cell mask |
 | phagocytic_strict | n_AC_total >= 1 |
-| threshold_used, um_per_pixel | resolved values for this field |
+| threshold_strategy | `single` or `hysteresis` |
+| threshold_used | single threshold or hysteresis high threshold |
+| threshold_low_used, threshold_high_used | explicit resolved thresholds |
+| um_per_pixel | resolved pixel calibration |
 | cellpose_model, seg_file_sha256 | segmentation provenance |
 | run_date_utc | run timestamp |
 
@@ -204,7 +251,10 @@ See `config.yaml` for all parameters. The most commonly tuned ones:
 | `segmentation.cellpose_model` | `cyto3`, `cpsam`, or path | custom-trained models go here |
 | `segmentation.cell_diameter_um` | 25-40 | typical BMDM body |
 | `segmentation.dilation.enabled` | false / true | enables peri-cell expansion |
+| `ac_detection.threshold_strategy` | `single`, `hysteresis` | selects AC object detector |
 | `ac_detection.threshold` | ~p99.9 of neg control | from calibrate_threshold.py |
+| `ac_detection.hysteresis.low_threshold` | assay-specific | connected object extent |
+| `ac_detection.hysteresis.high_threshold` | assay-specific | required bright seed |
 | `ac_detection.size_classes_um2.small_ac_max` | 15-25 | upper bound for "single AC body" |
 
 ## Cellpose v3 vs v4
