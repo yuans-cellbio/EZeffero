@@ -1,5 +1,2 @@
-sample_id,well,field,condition,optimizer_condition,ac_path,brightfield_path,seg_path,output_dir
-B05f00,B05,0,WT_AC,positive,/data/sample/CM_B05f00d0.TIF,/data/sample/CM_B05f00d4.TIF,,
-B05f01,B05,1,WT_AC,positive,/data/sample/CM_B05f01d0.TIF,/data/sample/CM_B05f01d4.TIF,,
-B06f00,B06,0,KO_AC,positive,/data/sample/CM_B06f00d0.TIF,/data/sample/CM_B06f00d4.TIF,/data/sample/CM_B06f00d4_seg.npy,
-B07f00,B07,0,no_AC_ctrl,negative,/data/sample/CM_B07f00d0.TIF,/data/sample/CM_B07f00d4.TIF,,
+sample_id,condition,replicate,field,ac_path,brightfield_path,seg_path,output_dir
+field_001,example,replicate_01,1,data/sample/field_001_ac.tif,data/sample/field_001_brightfield.tif,,outputs/example

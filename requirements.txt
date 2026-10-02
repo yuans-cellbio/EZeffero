@@ -1,5 +1,4 @@
-# Requires Python 3.10 or 3.11 (Cellpose 3.x does not install above 3.11).
-# python_requires>=3.10,<3.12
+# The supplied environment uses Python 3.11.
 
 numpy>=1.24
 pandas>=2.0

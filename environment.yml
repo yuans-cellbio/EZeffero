@@ -2,7 +2,6 @@ name: ezeffero
 channels:
   - conda-forge
 dependencies:
-  # Cellpose 3.x/4.x supports Python 3.10 or 3.11; keep this below 3.12.
   - python=3.11
   - pip
   - pip:
@@ -14,8 +13,5 @@ dependencies:
       - scipy>=1.10
       - pyyaml>=6.0
       - opencv-python-headless>=4.8
-      # Match the WSL NVIDIA driver reported by nvidia-smi (CUDA 12.4).
-      - --extra-index-url https://download.pytorch.org/whl/cu124
-      - torch==2.6.0+cu124
-      - torchvision==0.21.0+cu124
+      - torch>=2.0
       - "cellpose[gui]>=3.0"

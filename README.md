@@ -1,399 +1,186 @@
-# Efferocytosis quantification pipeline
+# EZeffero
 
-Quantify apoptotic cell (AC) association with bone marrow-derived macrophages
-(BMDMs) from EVOS fluorescence images. Produces one row per BMDM with AC
-counts split by size class, AC-channel intensity, and full provenance.
+Quantify fluorescent apoptotic-cell (AC) association with bone marrow-derived macrophages (BMDMs). Cellpose segments brightfield images; fluorescence objects are classified by area and assigned to cell masks. Outputs include per-cell counts, intensities, QC overlays, and provenance logs.
 
-## What this pipeline measures
+The measurement combines surface-bound and internalized ACs. `phagocytic_strict` means at least one small or large AC object is associated with a cell; it does not establish engulfment. Puncta are counted separately.
 
-The output measures **AC association** (surface-bound + internalized
-combined). Distinguishing surface-bound from engulfed requires additional
-assay components (pHrodo, outside-only counterstain, or confocal z-stacks)
-that are not part of this pipeline. Treat phagocytic_strict accordingly.
+## Install
 
-## Installation
-
-Requires **Python 3.10 or 3.11**. The binding constraint is Cellpose (3.x
-does not install on Python above 3.11; 3.10 is the maintainers' recommended
-version, with 3.9 and 3.11 also working). The pipeline code itself only
-needs 3.7+ but Cellpose pins the floor higher.
+Run commands from the repository root. The supplied environment uses Python 3.11 and supports the pipeline's Cellpose v3/v4 API handling:
 
 ```bash
-conda create -n efferocytosis python=3.10
-conda activate efferocytosis
-pip install -r requirements.txt
+conda env create -f environment.yml
+conda activate ezeffero
 ```
 
-GPU is auto-used if CUDA is available; otherwise the pipeline runs on CPU
-(slower but functional). Cellpose model weights are downloaded on first use.
+Alternatively, create a Python 3.11 environment and run `python -m pip install -r requirements.txt`. Install a PyTorch build appropriate for your hardware if you need CUDA. CPU operation is supported, and Cellpose weights may download on first use. The optional Cellpose GUI is useful for correcting masks.
 
-## Quickstart
+## Example images and quickstart
 
-1. Copy `config.yaml` next to your data and edit `microscope.um_per_pixel`
-   only if your images are not standard EVOS OME-TIFFs.
-2. Run the threshold calibration helper on your no-AC control images and
-   write the chosen threshold into `ac_detection.threshold`:
-   ```bash
-   python scripts/calibrate_threshold.py \
-       --neg-control /data/plate1/no_AC_well/*.TIF \
-       --background-subtraction \
-       --output threshold_report.txt
-   ```
-3. Run the pipeline.
+These anonymized EVOS images show the same field. The previews are for display; use the full-resolution TIFFs for analysis.
 
-### Single-field
-
-```bash
-python scripts/run_efferocytosis.py --config config.yaml single \
-    --ac /data/plate1/CM_B05f00d0.TIF \
-    --brightfield /data/plate1/CM_B05f00d4.TIF \
-    --output-prefix B05f00
-```
-
-### Batch
-
-```bash
-python scripts/run_efferocytosis.py --config config.yaml batch \
-    --input plate1_batch.csv \
-    --summary-out plate1_summary.json
-```
-
-See `batch_template.csv` for the input CSV format.
-
-### AC parameter optimization
-
-`scripts/optimize_ac_detection_params.py` jointly sweeps
-`ac_detection.threshold` and
-`ac_detection.size_classes_um2.small_ac_max`. It scores each candidate by
-the percentage of BMDMs containing at least one large AC, retaining
-parameter sets below a configurable healthy-control ceiling.
-
-Run the normal batch pipeline first. The optimizer reuses the resulting
-Cellpose masks and does not rerun segmentation:
-
-```bash
-python scripts/run_efferocytosis.py --config config.yaml batch \
-    --input optimization_batch.csv
-```
-
-The optimization batch CSV uses the normal batch columns plus:
-
-| Column | Purpose |
+| Brightfield | AC fluorescence |
 |---|---|
-| `perturbation` | optional second stratum selected by `--perturbation` |
-| `optimizer_condition` | explicit optimizer class; defaults are `negative` and `positive` |
-| `replicate` | biological replicate used when aggregating fields |
+| ![Example brightfield](data/sample/field_001_brightfield.png) | ![Example AC fluorescence](data/sample/field_001_ac.png) |
 
-Each row must either provide `seg_path` or have a mask at
-`<output_dir>/<brightfield_stem>_gray_seg.npy`. Use distinct output
-directories when EVOS acquisitions reuse image basenames; otherwise a mask
-from one acquisition can be incorrectly reused for another.
-
-Run independent sweeps for strata with different fluorescence
-distributions. For example:
+- [Brightfield TIFF](data/sample/field_001_brightfield.tif)
+- [AC fluorescence TIFF](data/sample/field_001_ac.tif)
+- [Additional fluorescence TIFF](data/sample/field_001_auxiliary.tif) (not required by this pipeline)
 
 ```bash
-python scripts/optimize_ac_detection_params.py \
-    --batch optimization_batch.csv \
-    --config config.yaml \
-    --output-dir outputs/ac_param_optimization/cm \
-    --perturbation all \
-    --negative-condition negative \
-    --positive-condition positive \
-    --thresholds 1:30:1 \
-    --small-ac-max 1:50:1 \
-    --max-negative-pct 10 \
-    --rank-by separation \
-    --config-out config_cm_optimized.yaml
+python scripts/run_efferocytosis.py --config config.yaml single --ac data/sample/field_001_ac.tif --brightfield data/sample/field_001_brightfield.tif --output-prefix field_001 --output-dir outputs/example
 ```
 
-Select experimental strata by supplying a batch CSV containing only the
-samples that should be compared. Columns such as `medium`, genotype, or
-treatment remain ordinary pass-through metadata and are not interpreted by
-the optimizer.
+Or run the supplied one-field batch:
 
-The grid syntax is `start:stop:step` with an inclusive stop, or a
-comma-separated list. By default, rows with `optimizer_condition=positive`
-are compared with rows having `optimizer_condition=negative`; override the
-keywords with `--positive-condition` and `--negative-condition`.
-`--rank-by separation` maximizes positive minus negative percent among
-candidates passing `--max-negative-pct`. `--rank-by score` additionally
-penalizes negative-class positivity by `--negative-penalty`. If the selected
-value is at a grid boundary, extend the grid and rerun before accepting it.
+```bash
+python scripts/run_efferocytosis.py --config config.yaml batch --input batch_template.csv --summary-out example_summary.json
+```
 
-The optimizer writes:
+The sample TIFFs retain pixel calibration only, with acquisition metadata removed. Default detection parameters are illustrative; calibrate them for your own controls before interpreting counts. The example is an input demonstration, not a validated benchmark or negative control.
 
-| File | Purpose |
-|---|---|
-| `candidate_scores.csv` | every parameter combination and its metrics |
-| `top_candidates.csv` | highest-ranked passing candidates |
-| `best_condition_by_mouse_summary.csv` | condition-level result for the selected parameters |
-| `best_field_counts.csv` | selected-parameter counts for every field |
-| `--config-out` path | input config copied with the selected threshold and size cutoff |
+## Image loading: EVOS and generic 2D TIFFs
 
-## Inputs and channels
+EZeffero supports two input workflows through the same TIFF-loading implementation; no separate loader mode or command-line switch is required.
 
-Two image channels are required per field: the AC fluorescence channel (any
-fluorophore color) and brightfield. The pipeline does not consume a nuclear
-channel; segmentation is brightfield-only. Cellpose-SAM (v4) is
-channel-agnostic and does not benefit from a separate nuclear input, and in
-2D epifluorescence an AC nucleus stacked on a BMDM nucleus cannot be
-distinguished from a single nucleus, so a nuclear channel adds no
-discriminating information for bound-vs-engulfed counts.
-
-The AC channel is collapsed to grayscale by per-pixel `max(R, G, B)`,
-which works for any single-fluorophore EVOS pseudo-color export. The
-brightfield channel uses luminance instead (see "Brightfield channel
-collapse" below).
-
-## Outputs
-
-Per field, in the brightfield image's folder by default:
-
-| File | Purpose |
-|---|---|
-| `<sample_id>_per_cell.csv` | one row per BMDM, all metrics + provenance |
-| `<sample_id>_overlay.png` | QC overlay (BF, BF+AC merge with masks, AC+masks, full annotation) |
-| `<sample_id>_run_log.json` | config snapshot, file hashes, software versions |
-| `<bf_basename>_gray.tif` | 8-bit luminance grayscale BF, ready to load in Cellpose GUI |
-| `<bf_basename>_gray_seg.npy` | Cellpose-native segmentation, paired with the gray TIFF |
-
-To inspect or correct the segmentation, open `<bf_basename>_gray.tif` in the
-Cellpose GUI; the matching `_gray_seg.npy` auto-loads. Edit, save, then
-re-run the pipeline pointing at the edited seg file.
-
-If you prefer to keep only the original RGB BF and the original seg naming
-(`<bf_basename>_seg.npy` referencing the RGB BF), set
-`output.save_grayscale_brightfield: false` in the config. The grayscale
-TIFF is preferred because the original EVOS RGB BF often has a saturated
-red channel that degrades manual GUI editing as well as Cellpose
-segmentation; see "Brightfield channel collapse" below.
-
-## Per-cell CSV columns
-
-| Column | Description |
-|---|---|
-| sample_id | from input CSV (or --output-prefix in single mode) |
-| (pass-through metadata) | any extra columns from the batch CSV |
-| cell_id | label index within the field (1..N) |
-| cell_area_px, cell_area_um2 | cell footprint area |
-| cell_centroid_x, cell_centroid_y | cell centroid (pixel coords) |
-| cell_solidity | convex hull area / cell area |
-| is_border_cell | cell touches image border |
-| n_large_AC | AC objects above small_ac_max threshold |
-| n_small_AC | AC objects between puncta_max and small_ac_max |
-| n_puncta | AC objects below puncta_max threshold |
-| n_AC_total | n_large_AC + n_small_AC |
-| ac_integrated_intensity | sum of AC channel within cell mask |
-| ac_mean_intensity | per-pixel AC intensity within cell mask |
-| phagocytic_strict | n_AC_total >= 1 |
-| threshold_used, um_per_pixel | resolved values for this field |
-| cellpose_model, seg_file_sha256 | segmentation provenance |
-| run_date_utc | run timestamp |
-
-Other definitions of "phagocytic" (intensity-based, large-AC-only, etc.)
-should be derived in R from the raw count and intensity columns. They are
-intentionally not baked into the CSV.
-
-## Configuration
-
-See `config.yaml` for all parameters. The most commonly tuned ones:
-
-| Parameter | Typical range | Notes |
+| Input workflow | Metadata handling | What you supply |
 |---|---|---|
-| `segmentation.cellpose_model` | `cyto3`, `cpsam`, or path | custom-trained models go here |
-| `segmentation.cell_diameter_um` | 25-40 | typical BMDM body |
-| `segmentation.dilation.enabled` | false / true | enables peri-cell expansion |
-| `ac_detection.threshold` | ~p99.9 of neg control | from calibrate_threshold.py |
-| `ac_detection.size_classes_um2.small_ac_max` | 15-25 | upper bound for "single AC body" |
+| **EVOS TIFF loader workflow** | Extracts pixel size from OME-XML `PhysicalSizeX`, with TIFF resolution tags as a fallback | Paired brightfield/AC image paths; override `microscope.um_per_pixel` if calibration is missing or incorrect |
+| **Generic 2D TIFF loader workflow** | Reads image pixels without interpreting microscope-specific acquisition metadata | Separate matched 2D TIFF planes, explicit `microscope.um_per_pixel`, channel assignments through the image paths, and any sample/condition/replicate metadata in the batch CSV |
 
-## Cellpose v3 vs v4
+The EVOS workflow extracts pixel calibration, not a complete experiment description. Generic TIFFs may also contain readable OME or TIFF calibration tags, but set pixel size explicitly for this workflow rather than relying on exported tags. `microscope.scope` is a descriptive label; it does not select a loader. Both workflows require one 2D plane per input and use the same analysis commands.
 
-The pipeline auto-detects the installed Cellpose major version and adapts
-its API accordingly. Segmentation is brightfield-only under both versions.
-The differences that affect this pipeline:
+### Generic TIFF example: Micro-Manager exports
 
-| | Cellpose v3 (cyto3 et al.) | Cellpose v4 (Cellpose-SAM / CPSAM) |
-|---|---|---|
-| Built-in models | cyto, cyto2, cyto3, nuclei, ... | CPSAM only |
-| `model_type` argument | required | removed (silently ignored) |
-| `channels` argument | required (`[0,0]` for BF-only) | removed (silently ignored) |
-| Diameter handling | mandatory or auto-estimated | optional; CPSAM is robust to scale |
+Micro-Manager is an example acquisition source for the generic 2D TIFF workflow. This build has no dedicated Micro-Manager importer or acquisition-metadata parser.
 
-If you set `cellpose_model: cyto3` in the config but have v4 installed,
-you will see a warning and CPSAM will be used. To silence the warning,
-set `cellpose_model: cpsam`.
+Micro-Manager can save separate TIFF planes, multipage OME-TIFF stacks, or NDTiff datasets; see its [file-format documentation](https://micro-manager.org/Micro-Manager_File_Formats). EZeffero currently accepts **one 2D TIFF per channel per field**. It does not select channels, positions, time points, or z-slices from an acquisition, and its image loader reads only the first TIFF page. Do not pass a whole multichannel stack as both inputs.
 
-The CP4 GUI ships only CPSAM and does not expose a separate nuclear
-channel option, because CPSAM is generalist by design. Custom CPSAM
-models trained in the GUI inherit the same single-image input
-convention.
+1. Open the acquisition in Micro-Manager. For OME-TIFF stacks, ImageJ/Fiji can also open the dataset; check the channel labels and dimensions against acquisition metadata. Open NDTiff through Micro-Manager before exporting planes.
+2. For each position and chosen time point/z-plane, export the matching brightfield and AC fluorescence planes as separate TIFFs. In Fiji, duplicate only the selected channel, slice, and frame, then save that single plane as TIFF. Confirm each exported file contains exactly one plane. Use neutral filenames such as `field_001_brightfield.tif` and `field_001_ac.tif`.
+3. Preserve pixel values and bit depth. Do not save screenshots, apply a display LUT to fluorescence, or independently auto-scale each field. Both channels must share dimensions, position, and pixel calibration. Analyze different time points or z-planes as separate rows; this is a 2D analysis, not a volumetric engulfment assay.
+4. Copy `config.yaml` to `config_generic_tiff.yaml`. Set `microscope.scope: "Generic TIFF"` (a descriptive label) and explicitly set `microscope.um_per_pixel` from the acquisition calibration. The loader does not parse Micro-Manager JSON metadata or `metadata.txt`.
+5. For native grayscale data, set `segmentation.brightfield_channel_extraction: "max_rgb"`; the grayscale branch preserves native intensity values. The default `luminance` branch converts to 8-bit and can clip higher-bit-depth brightfield data. Keep `ac_detection.channel_extraction: "max_rgb"` for grayscale fluorescence; it passes through unchanged.
+6. For high-bit-depth data, set `output.qc_ac_display_vmin` and `output.qc_ac_display_vmax` to appropriate shared display limits, or set both to `null` for per-field visualization. Display limits do not change detection. The saved `_gray.tif` companion is clipped to 0â€“255 by the current exporter; for native high-bit-depth BF, set `output.save_grayscale_brightfield: false` and inspect the original TIFF with its matching `_seg.npy` in Cellpose.
 
-## Brightfield channel collapse
+Calibrate using identically exported no-AC control planes. The number below is an example pixel size: replace it with your actual calibration, and match the background radius and channel extraction to your config.
 
-EVOS exports BF as RGB with strongly unequal channels because the
-transmitted-light LED has a dominant color (typically red, which can
-saturate the R channel). Collapsing with `max(R, G, B)` then picks the
-saturated channel and discards the cell-edge contrast that lives in the
-G and B channels. This degrades segmentation quality substantially.
+```bash
+python scripts/calibrate_threshold.py --neg-control data/controls/control_001_ac.tif data/controls/control_002_ac.tif --channel-extraction max_rgb --background-subtraction --rolling-ball-radius-um 20 --um-per-pixel 0.5 --output threshold_report.txt
+```
 
-The default for brightfield is now `luminance` (PIL `convert('L')`,
-ITU-R BT.601 weighted sum `0.299R + 0.587G + 0.114B`), which preserves
-contrast across all three channels. This matches what ImageJ's
-`Image > Type > 8-bit` does on RGB images. Override via
-`segmentation.brightfield_channel_extraction` in the config if needed.
+Write the selected value into `ac_detection.threshold` and check negative-control overlays. Thresholds use native fluorescence intensity units after preprocessing; do not transfer an 8-bit threshold unchanged to 16-bit data. The helper accepts explicit filenames, not a quoted wildcard.
 
-For the AC fluorescence channel, `max_rgb` remains the right default
-because EVOS pseudo-color fluorescence images concentrate signal in only
-one of R/G/B.
+```bash
+python scripts/run_efferocytosis.py --config config_generic_tiff.yaml single --ac data/exported/field_001_ac.tif --brightfield data/exported/field_001_brightfield.tif --output-prefix field_001 --output-dir outputs/field_001
+```
 
-## Custom Cellpose models
+For multiple fields, create a CSV with one row per paired field:
 
-Set `segmentation.cellpose_model` to the absolute path of a model file
-output by the Cellpose GUI's "Train new model" feature. The pipeline
-detects the file and loads it as a `pretrained_model`. When using a
-custom model, `use_model_diameter` defaults to `true` so Cellpose uses the
-diameter learned from your training data rather than the config value.
-
-Custom models trained in CP4 are channel-agnostic (CPSAM-derived). Custom
-models trained in CP3 follow the v3 channels convention. The pipeline
-uses whichever convention matches the installed Cellpose version, so a v3
-custom model will not load correctly under v4 and vice versa.
-
-## Reusing existing segmentation
-
-To re-run quantification against a corrected segmentation without invoking
-Cellpose:
-
-1. Open `<bf_basename>_gray.tif` in the Cellpose GUI; masks auto-load
-   from the matching `<bf_basename>_gray_seg.npy`.
-2. Edit boundaries manually and save in the GUI.
-3. Re-run the pipeline with `--seg-file path/to/edited_gray_seg.npy`
-   (single mode) or fill the `seg_path` column in the batch CSV.
-
-The edited seg file is never overwritten by a re-run. Its sha256 is
-recorded on every per-cell row, so two runs against the same edited seg
-file produce identical output.
-
-## Empty cells in the batch CSV
-
-Both `seg_path` and `output_dir` are optional. An empty cell triggers the
-default behavior:
-
-| Column | Empty | Set |
-|---|---|---|
-| `seg_path` | run Cellpose, save new `_gray_seg.npy` | load masks from this file, skip Cellpose, do not write a new seg file |
-| `output_dir` | write outputs into the brightfield image's parent folder | write outputs into this folder |
-
-There is no special syntax (no `null`, no `NA`); a literally empty cell is
-the right input.
-
-## Keeping border cells
-
-Set `segmentation.exclude_border_cells: false` in the config. Cells that
-touch any image border are then retained in the per-cell CSV with
-`is_border_cell=True`, and you can filter them downstream as you like
-(or keep them in some analyses and exclude them in others). The
-`is_border_cell` flag is computed and written regardless of the config
-value, so dropping border cells later in R is always possible.
-
-## Multi-round workflow with shared segmentation
-
-Use case: image two AC labels in different fluorescence channels (e.g.,
-CellBrite Green for AC1, pHrodo Red for AC2), run them through the
-pipeline separately, and analyze them as paired observations on the same
-BMDMs without re-running Cellpose for the second round.
-
-The pipeline supports this without any new arguments. The seg file is
-keyed by brightfield basename, while per-cell CSV / overlay / run_log are
-keyed by `sample_id`. Use distinct `sample_id` values per round and the
-same `output_dir`. Round 1 segments and writes everything; Round 2 reuses
-the seg file and writes only AC-derived outputs.
-
-**Round 1 batch CSV** (`plate1_AC1.csv`):
 ```csv
-sample_id,well,field,condition,ac_label,ac_path,brightfield_path,seg_path,output_dir
-B05f00_AC1,B05,00,WT,AC1,/data/CM_B05f00d0.TIF,/data/CM_B05f00d4.TIF,,/data/output
-B05f01_AC1,B05,01,WT,AC1,/data/CM_B05f01d0.TIF,/data/CM_B05f01d4.TIF,,/data/output
+sample_id,condition,replicate,field,ac_path,brightfield_path,seg_path,output_dir
+field_001,positive,replicate_01,1,data/exported/field_001_ac.tif,data/exported/field_001_brightfield.tif,,outputs/field_001
+field_002,negative,replicate_01,2,data/exported/field_002_ac.tif,data/exported/field_002_brightfield.tif,,outputs/field_002
 ```
 
-After running, `/data/output/` contains per field:
-```
-CM_B05f00d4_gray.tif
-CM_B05f00d4_gray_seg.npy
-B05f00_AC1_per_cell.csv
-B05f00_AC1_overlay.png
-B05f00_AC1_run_log.json
+```bash
+python scripts/run_efferocytosis.py --config config_generic_tiff.yaml batch --input batch.csv --summary-out batch_summary.json
 ```
 
-Inspect overlays. If any segmentation needs correction, edit the
-matching `_gray_seg.npy` in the Cellpose GUI and save.
+CSV paths resolve relative to the working directory, not the CSV location. Absolute paths also work. Use unique `sample_id` values. `seg_path` and `output_dir` may be blank. If inputs are in different folders, provide `output_dir`. Use distinct output folders for acquisitions that reuse brightfield basenames to prevent reusing another field's mask.
 
-**Round 2 batch CSV** (`plate1_AC2.csv`):
-```csv
-sample_id,well,field,condition,ac_label,ac_path,brightfield_path,seg_path,output_dir
-B05f00_AC2,B05,00,WT,AC2,/data/CM_B05f00d2.TIF,/data/CM_B05f00d4.TIF,/data/output/CM_B05f00d4_gray_seg.npy,/data/output
-B05f01_AC2,B05,01,WT,AC2,/data/CM_B05f01d2.TIF,/data/CM_B05f01d4.TIF,/data/output/CM_B05f01d4_gray_seg.npy,/data/output
+## Configuration and detection
+
+`config.yaml` contains the available settings. For generic 2D TIFFs, supply pixel size explicitly and record experimental metadata in the batch CSV. Pixel size resolves from the config override, then OME `PhysicalSizeX` or TIFF resolution tags. Explicit calibration is preferable when exported TIFF tags represent display resolution rather than microscope sampling. This implementation uses one pixel size for both axes; inputs should have square pixels.
+
+| Setting | Purpose |
+|---|---|
+| `segmentation.cellpose_model` | `cpsam` for Cellpose v4, `cyto3` for v3, or a custom model path |
+| `segmentation.cell_diameter_um` | Physical cell diameter used for rescaling; null/0 disables diameter rescaling |
+| `segmentation.use_model_diameter` | Use a custom model's learned diameter; set explicitly when using a custom model |
+| `segmentation.min_cell_area_um2` | Remove small cell masks |
+| `segmentation.exclude_border_cells` | Remove cells touching the image edge |
+| `segmentation.dilation` | Optional peri-cell expansion; the supplied config enables it |
+| `ac_detection.background_subtraction` | Morphological top-hat background correction; radius is specified in micrometers |
+| `ac_detection.threshold` | Global fluorescence threshold after preprocessing |
+| `ac_detection.min_object_area_um2` | Remove very small fluorescence objects |
+| `ac_detection.size_classes_um2` | Area boundaries for puncta, small ACs, and large ACs |
+
+RGB fluorescence uses per-pixel `max(R,G,B)`. RGB brightfield defaults to luminance, which reduces the influence of a saturated color channel. Segmentation uses brightfield only. Under Cellpose v4, older built-in model names fall back to CPSAM with a warning. Match custom-model files to the Cellpose version used for training.
+
+## Outputs and QC
+
+Outputs go to `output_dir`, or the brightfield input folder when it is blank.
+
+| File | Contents |
+|---|---|
+| `<sample_id>_per_cell.csv` | One row per retained BMDM, metrics and input metadata |
+| `<sample_id>_overlay.png` | Brightfield/fluorescence panels with masks and annotations |
+| `<sample_id>_run_log.json` | Config, input hashes, resolved settings, versions, timestamp |
+| `<brightfield_stem>_gray.tif` | 8-bit brightfield companion when enabled |
+| `<brightfield_stem>_gray_seg.npy` | Saved Cellpose masks paired with the companion |
+| `<brightfield_stem>_seg.npy` | Alternative mask name when grayscale export is disabled |
+
+Inspect overlays for missed cells, merged masks, background detections, and misplaced fluorescence objects. Open the BF companion (or original BF if grayscale export is disabled) in Cellpose, correct the corresponding masks, and save. Re-run with `--seg-file path/to/edited_seg.npy` in single mode or `seg_path` in batch mode. Existing supplied masks are not overwritten. A blank `seg_path` automatically reuses the default mask in the output directory or BF source folder if it exists; otherwise Cellpose runs. To force a fresh segmentation, move existing masks out of these searched locations.
+
+For two fluorescence labels on the same field, use distinct sample IDs and supply the same BF and `seg_path` for both runs. This preserves the masks while producing separate AC outputs; rerunning the same sample ID in the same output folder overwrites its CSV, overlay, and log.
+
+### Per-cell metrics
+
+| Columns | Meaning |
+|---|---|
+| `sample_id`, extra batch columns | Field ID and pass-through metadata |
+| `cell_id` | Label within this field |
+| `cell_area_px`, `cell_area_um2` | Analyzed cell footprint, including dilation if enabled |
+| `cell_centroid_x`, `cell_centroid_y` | Centroid in pixels |
+| `cell_solidity` | Cell area divided by convex-hull area |
+| `is_border_cell` | Analyzed mask touches the image boundary |
+| `n_large_AC`, `n_small_AC`, `n_puncta` | Associated objects in each size class |
+| `n_AC_total` | Small plus large AC counts; excludes puncta |
+| `ac_integrated_intensity`, `ac_mean_intensity` | Background-corrected fluorescence across the analyzed cell footprint |
+| `phagocytic_strict` | `n_AC_total >= 1` |
+| `threshold_used`, `um_per_pixel` | Resolved detection and calibration values |
+| `cellpose_model`, `seg_file_sha256`, `run_date_utc` | Configured model, mask-file hash, timestamp |
+
+When dilation is enabled, `expand_labels` grows masks without overlap between neighbors. Provenance supports comparing runs, but timestamps differ and exact Cellpose reproducibility can depend on hardware and software versions.
+
+## Optimize AC parameters
+
+First run the normal batch analysis to create or correct masks. `scripts/optimize_ac_detection_params.py` reuses masks to sweep detection threshold and the small/large AC area boundary. Add `optimizer_condition` (`negative` or `positive`) and `replicate` to the batch CSV, with explicit `output_dir` or `seg_path` for mask lookup. `perturbation` is an optional stratum selector; use `--perturbation all` to include all rows. The score uses the percentage of BMDMs with at least one **large** AC, which differs from `phagocytic_strict`.
+
+```bash
+python scripts/optimize_ac_detection_params.py --batch optimization_batch.csv --config config.yaml --output-dir outputs/optimization --perturbation all --negative-condition negative --positive-condition positive --thresholds 1:30:1 --small-ac-max 1:50:1 --max-negative-pct 10 --rank-by separation --config-out config_optimized.yaml
 ```
 
-Round 2 reuses the seg files, does not invoke Cellpose, does not rewrite
-the gray TIFFs, and writes `*_AC2_*` files alongside the existing
-`*_AC1_*` files. Nothing is overwritten.
+Grid syntax is inclusive `start:stop:step` or a comma-separated list. Adapt grids to intensity units and expected AC areas. Separation maximizes positive minus negative percentage among candidates passing the negative-control ceiling; `--rank-by score` additionally applies `--negative-penalty`. Extend grids if the selected value is on a boundary. Inspect controls and selected-parameter overlays before accepting a config; rerun the pipeline with that config to regenerate outputs.
 
-Provenance: the `seg_file_sha256` column on every per-cell row will be
-identical between AC1 and AC2 for the same field. Use this in downstream
-analysis to verify that paired observations really did use identical
-masks. The pass-through metadata column `ac_label` (or whatever you name
-it) distinguishes the rounds in a concatenated long-format table.
+Outputs are `candidate_scores.csv`, `top_candidates.csv`, `best_condition_by_mouse_summary.csv` (the current filename for replicate-level results), `best_field_counts.csv`, and the optional selected config.
 
-## Adjacent-cell handling
+Summarize large-AC positivity from per-cell outputs with:
 
-When dilation is enabled, the pipeline uses
-`skimage.segmentation.expand_labels`, a multi-source watershed that grows
-each label simultaneously and stops at the midline between neighbors.
-Dilated regions never overlap. This is materially different from binary
-dilation followed by overlap removal, which would create exclusion zones.
-
-## Reproducibility
-
-Each run writes `<sample_id>_run_log.json` containing the full config
-snapshot, sha256 of every input file, software versions, and the random
-seed (123). Two runs on the same inputs and seg file produce identical
-output.
-
-## Statistical analysis
-
-The pipeline output is per-cell. For across-condition comparisons, the
-statistical unit should be the well, with fields as technical replicates.
-Aggregate field-level results within each well before applying inferential
-tests. This is standard for plate-based imaging assays and avoids
-pseudoreplication.
-
-## Known limitations
-
-- Pipeline cannot distinguish surface-bound from internalized ACs.
-- Lipophilic dye transfer between membranes (documented for CellBrite-class
-  probes) contributes to small-puncta signal independently of true engulfment.
-- Custom Cellpose models are only as good as their training set; performance
-  can drop on morphologically different conditions.
-
-## Project structure
-
+```bash
+python scripts/summarize_large_ac_by_mouse.py --input-dir outputs --output large_ac_summary.csv --group-cols condition,replicate
 ```
-efferocytosis_pipeline/
-├── config.yaml
-├── README.md
-├── requirements.txt
-├── batch_template.csv
-├── src/
-│   ├── __init__.py
-│   ├── io.py              # file discovery, channel extraction, metadata
-│   ├── segment.py         # Cellpose wrapper, seg file I/O
-│   ├── detect_AC.py       # background subtraction, thresholding, classification
-│   ├── quantify.py        # per-cell metric computation
-│   ├── overlay.py         # QC overlay rendering
-│   └── pipeline.py        # orchestration, batch loop
-└── scripts/
-    ├── run_efferocytosis.py
-    └── calibrate_threshold.py
+
+Supply `field`, `condition`, and `replicate` metadata in the input batch for this grouping. Use an input folder containing only the intended run so earlier analyses are not pooled accidentally. Choose independent biological replicates as the statistical unit; cells and fields from the same well are not independent biological replicates.
+
+## Limitations
+
+- Association does not distinguish surface binding from internalization.
+- Dye transfer can produce fluorescence puncta independently of AC uptake.
+- Segmentation and detection require controls and visual QC for each imaging setup.
+- This pipeline analyzes 2D paired images, not raw multidimensional datasets.
+
+## Repository layout
+
+```text
+config.yaml                     Default analysis settings
+environment.yml / requirements.txt  Installation dependencies
+batch_template.csv              Runnable anonymized example batch
+data/sample/                    Example TIFFs and display previews
+scripts/run_efferocytosis.py     Single-field and batch entry point
+scripts/calibrate_threshold.py  Negative-control calibration
+scripts/optimize_ac_detection_params.py  Threshold/area sweep
+scripts/summarize_large_ac_by_mouse.py   Replicate summaries
+src/                            Loading, segmentation, detection, quantification, QC
 ```
