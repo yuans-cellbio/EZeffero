@@ -4,9 +4,9 @@
 # using the resolved um_per_pixel. Edit values to suit your imaging setup.
 
 microscope:
-  scope: "EVOS"
+  scope: "EVOS"             # descriptive label; does not select a loader
   um_per_pixel: null          # auto-extracted from OME-XML / TIFF tags
-                              # set explicitly if metadata is missing or wrong
+                              # set explicitly for generic 2D TIFFs or missing/incorrect metadata
 
 segmentation:
   cellpose_model: "cpsam"     # 'cpsam' (default in Cellpose v4),
@@ -32,7 +32,7 @@ segmentation:
   min_cell_area_um2: 100      # below this is dropped (debris, fragments)
   exclude_border_cells: true
   dilation:
-    enabled: true             # peri-cell dilation, off by default
+    enabled: true             # peri-cell dilation enabled in this example
     distance_um: 1
     method: "expand_labels"   # multi-source watershed, no overlap
 
